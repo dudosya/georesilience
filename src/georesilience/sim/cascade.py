@@ -37,10 +37,14 @@ class CascadeResult:
         out_dir.mkdir(parents=True, exist_ok=True)
         write_parquet(self.nodes, out_dir / "simulation_nodes.parquet")
         write_parquet(self.steps, out_dir / "simulation_steps.parquet")
-        (out_dir / "config.json").write_text(json.dumps(self.config.__dict__, indent=2), encoding="utf-8")
+        (out_dir / "config.json").write_text(
+            json.dumps(self.config.__dict__, indent=2), encoding="utf-8"
+        )
 
 
-def run_cascade(graph: nx.Graph, *, node_metrics: NodeMetrics, config: CascadeConfig) -> CascadeResult:
+def run_cascade(
+    graph: nx.Graph, *, node_metrics: NodeMetrics, config: CascadeConfig
+) -> CascadeResult:
     if config.initial_failures < 1:
         raise ValueError("initial_failures must be >= 1")
     if config.max_steps < 1:
@@ -48,33 +52,40 @@ def run_cascade(graph: nx.Graph, *, node_metrics: NodeMetrics, config: CascadeCo
 
     rng = random.Random(config.seed)
 
+    # Normalize node IDs to strings to avoid subtle int/str mismatches.
+    g = nx.relabel_nodes(graph, lambda n: str(n), copy=True)
+
     base_load = node_metrics.betweenness
     capacity: dict[str, float] = {
-        n: (1.0 + config.alpha) * float(base_load.get(n, 0.0)) for n in graph.nodes
+        n: (1.0 + config.alpha) * float(base_load.get(n, 0.0)) for n in g.nodes
     }
 
     failed: set[str] = set()
     failed_step: dict[str, int] = {}
 
-    initial = _select_initial_failures(graph, base_load=base_load, config=config, rng=rng)
+    initial = _select_initial_failures(g, base_load=base_load, config=config, rng=rng)
     for n in initial:
         failed.add(n)
         failed_step[n] = 0
 
     step_rows: list[dict[str, object]] = []
 
-    current_graph = graph.copy()
+    current_graph = g.copy()
     current_graph.remove_nodes_from(initial)
 
     for step in range(1, config.max_steps + 1):
         # recompute load on remaining graph
-        load = nx.betweenness_centrality(current_graph, normalized=True) if current_graph.number_of_nodes() else {}
+        load = (
+            nx.betweenness_centrality(current_graph, normalized=True)
+            if current_graph.number_of_nodes()
+            else {}
+        )
 
         newly_failed: list[str] = []
         for n in current_graph.nodes:
-            n_str = str(n)
-            if float(load.get(n, 0.0)) > float(capacity.get(n_str, 0.0)):
-                newly_failed.append(n_str)
+            # n is already a str because of relabeling
+            if float(load.get(n, 0.0)) > float(capacity.get(n, 0.0)):
+                newly_failed.append(n)
 
         step_rows.append(
             {
@@ -93,8 +104,8 @@ def run_cascade(graph: nx.Graph, *, node_metrics: NodeMetrics, config: CascadeCo
         current_graph.remove_nodes_from(newly_failed)
 
     nodes_rows: list[dict[str, object]] = []
-    for n in graph.nodes:
-        n_str = str(n)
+    for n in g.nodes:
+        n_str = n
         nodes_rows.append(
             {
                 "node_id": n_str,
@@ -106,7 +117,10 @@ def run_cascade(graph: nx.Graph, *, node_metrics: NodeMetrics, config: CascadeCo
         )
 
     nodes_df = pl.from_dicts(nodes_rows)
-    steps_df = pl.from_dicts(step_rows) if step_rows else pl.DataFrame({"step": [], "remaining_nodes": [], "new_failures": []})
+    if step_rows:
+        steps_df = pl.from_dicts(step_rows)
+    else:
+        steps_df = pl.DataFrame({"step": [], "remaining_nodes": [], "new_failures": []})
 
     return CascadeResult(nodes=nodes_df, steps=steps_df, config=config)
 

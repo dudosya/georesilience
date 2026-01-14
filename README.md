@@ -64,6 +64,20 @@ Run a cascading failure simulation:
 
 Outputs are written under `data/austin/runs/...`.
 
+### Train / Predict (GCN)
+
+Install ML extras first:
+
+`uv pip install -e .[ml]`
+
+Train a node-risk GCN using the latest simulation run for labels/features:
+
+`georesilience train gcn data/austin --epochs 30 --seed 42`
+
+Predict node risk probabilities (writes a Parquet file and prints top-k):
+
+`georesilience predict gcn data/austin --checkpoint data/austin/models/gcn/last.ckpt`
+
 ## Windows note (Torch Geometric)
 
 Torch Geometric installs are sensitive to your PyTorch build (CPU vs CUDA) and version.
@@ -71,5 +85,7 @@ The most reliable path is:
 
 1. Install PyTorch first (CPU/CUDA) using the official selector.
 2. Install `torch-geometric` and its compiled companions matching that torch build.
+
+If `uv pip install -e .[ml]` fails on Windows, follow the Torch Geometric wheel instructions for your exact Torch/CUDA version.
 
 If that becomes painful, we can swap the GCN implementation to pure PyTorch while keeping the same CLI/data contracts.

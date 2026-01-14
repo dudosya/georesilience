@@ -6,7 +6,9 @@ import typer
 from rich.console import Console
 
 from georesilience.cli.ingest import ingest_app
+from georesilience.cli.predict import predict_app
 from georesilience.cli.simulate import simulate_app
+from georesilience.cli.train import train_app
 
 app = typer.Typer(
     name="georesilience",
@@ -34,6 +36,8 @@ def _main(
 
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(simulate_app, name="simulate")
+app.add_typer(train_app, name="train")
+app.add_typer(predict_app, name="predict")
 
 
 def main() -> None:

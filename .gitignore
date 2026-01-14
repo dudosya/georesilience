@@ -8,6 +8,7 @@ __pycache__/
 .instructions
 cache/
 data/
+lightning_logs/
 
 # Distribution / packaging
 .Python

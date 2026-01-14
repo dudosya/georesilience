@@ -23,7 +23,9 @@ def ingest_city(
         file_okay=False,
     ),
     cache: bool = typer.Option(True, "--cache/--no-cache", help="Enable OSMnx caching."),
-    validate: bool = typer.Option(True, "--validate/--no-validate", help="Run Pydantic validation."),
+    validate: bool = typer.Option(
+        True, "--validate/--no-validate", help="Run Pydantic validation."
+    ),
 ) -> None:
     app_ctx = get_context(ctx.obj)
     dataset_dir = out or (app_ctx.data_dir / _slug(place))
