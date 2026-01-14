@@ -1,0 +1,61 @@
+[project]
+name = "georesilience"
+version = "0.1.0"
+description = "CLI tool to build a digital twin of urban power grids for resilience simulation and risk prediction."
+readme = "README.md"
+authors = [{ name = "dudosya", email = "kenaykay@gmail.com" }]
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "typer>=0.12.3",
+    "rich>=13.7.1",
+    "polars>=1.7.1",
+    "pydantic>=2.7.4",
+    "networkx>=3.3",
+]
+
+[project.scripts]
+georesilience = "georesilience.cli.app:main"
+
+[project.optional-dependencies]
+# Geospatial ingestion. Keep this optional because geo stacks can be heavy on Windows.
+geo = ["osmnx>=2.0.0"]
+
+# Machine learning layer (optional). Torch Geometric installs can be platform/cuda specific.
+ml = ["numpy>=1.26", "torch", "pytorch-lightning>=2.3", "torch-geometric"]
+
+dev = [
+    "pytest>=8.3",
+    "hypothesis>=6.112",
+    "ruff>=0.6.9",
+    "mypy>=1.11",
+    "types-requests",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = []
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+warn_unused_configs = true
+disallow_any_generics = true
+no_implicit_optional = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = ["osmnx.*", "geopandas.*", "shapely.*", "pyproj.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[build-system]
+requires = ["uv_build>=0.9.21,<0.10.0"]
+build-backend = "uv_build"
