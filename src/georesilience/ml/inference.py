@@ -52,6 +52,29 @@ def predict_node_risk(
     out.parent.mkdir(parents=True, exist_ok=True)
     write_parquet(df, out)
 
+    # Summary table
+    stats = df.select(
+        [
+            pl.col("risk").min().alias("min"),
+            pl.col("risk").mean().alias("mean"),
+            pl.col("risk").max().alias("max"),
+            pl.col("risk").std().alias("std"),
+        ]
+    ).to_dicts()[0]
+    summary = Table(title="Prediction summary")
+    summary.add_column("item")
+    summary.add_column("value")
+    summary.add_row("checkpoint", str(checkpoint))
+    summary.add_row("run_dir", str(run_dir))
+    summary.add_row("out", str(out))
+    summary.add_row("nodes", str(df.height))
+    summary.add_row("risk_min", f"{float(stats['min']):.4f}")
+    summary.add_row("risk_mean", f"{float(stats['mean']):.4f}")
+    summary.add_row("risk_max", f"{float(stats['max']):.4f}")
+    if stats.get("std") is not None:
+        summary.add_row("risk_std", f"{float(stats['std']):.4f}")
+    console.print(summary)
+
     # Rich table summary
     top = df.sort("risk", descending=True).head(top_k)
     table = Table(title=f"Top {top_k} risk nodes")

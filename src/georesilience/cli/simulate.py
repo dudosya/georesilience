@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 import typer
+from rich.table import Table
 
 from georesilience.cli.common import get_context
 from georesilience.graph.build import build_graph_from_parquet
@@ -45,11 +46,15 @@ def simulate_cascade(
 
     seed_everything(seed)
 
-    nodes = read_parquet(nodes_path)
-    edges = read_parquet(edges_path)
+    with app_ctx.console.status("Loading dataset..."):
+        nodes = read_parquet(nodes_path)
+        edges = read_parquet(edges_path)
 
-    graph = build_graph_from_parquet(nodes=nodes, edges=edges)
-    metrics = compute_node_metrics(graph, advanced=advanced_metrics)
+    with app_ctx.console.status("Building graph..."):
+        graph = build_graph_from_parquet(nodes=nodes, edges=edges)
+
+    with app_ctx.console.status("Computing centrality metrics..."):
+        metrics = compute_node_metrics(graph, advanced=advanced_metrics)
 
     cfg = CascadeConfig(
         alpha=alpha,
@@ -59,18 +64,21 @@ def simulate_cascade(
         max_steps=max_steps,
     )
 
-    result = run_cascade(graph, node_metrics=metrics, config=cfg)
+    with app_ctx.console.status("Running cascading failure simulation..."):
+        result = run_cascade(graph, node_metrics=metrics, config=cfg)
 
     out_dir = dataset / "runs" / f"cascade_alpha{alpha}_k{initial_failures}_{mode.value}_seed{seed}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Export features for downstream ML.
-    node_metrics_frame(metrics).write_parquet(out_dir / "node_metrics.parquet")
-    edge_metrics_frame(graph, advanced=advanced_metrics).write_parquet(
-        out_dir / "edge_metrics.parquet"
-    )
+    with app_ctx.console.status("Writing outputs..."):
+        node_metrics_df = node_metrics_frame(metrics)
+        node_metrics_df.write_parquet(out_dir / "node_metrics.parquet")
 
-    result.write(out_dir)
+        edge_metrics_df = edge_metrics_frame(graph, advanced=advanced_metrics)
+        edge_metrics_df.write_parquet(out_dir / "edge_metrics.parquet")
+
+        result.write(out_dir)
 
     # Stable, human-readable run metadata.
     failed_count = int(result.nodes.filter(result.nodes["failed"]).height)
@@ -103,5 +111,48 @@ def simulate_cascade(
         },
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    # Print-only bottleneck summary (simple, user-facing).
+    top_n = 10
+    nodes_top = (
+        node_metrics_df.sort("betweenness", descending=True)
+        .select(["node_id", "betweenness", "degree", "component_size"])
+        .head(top_n)
+    )
+    node_table = Table(title=f"Top {top_n} bottleneck nodes")
+    node_table.add_column("node_id")
+    node_table.add_column("betweenness", justify="right")
+    node_table.add_column("degree", justify="right")
+    node_table.add_column("component", justify="right")
+    for row in nodes_top.iter_rows(named=True):
+        node_table.add_row(
+            str(row["node_id"]),
+            f"{float(row['betweenness']):.6f}",
+            f"{float(row['degree']):.0f}",
+            f"{int(row['component_size'])}",
+        )
+    app_ctx.console.print(node_table)
+
+    edges_top = (
+        edge_metrics_df.sort("edge_betweenness", descending=True)
+        .select(["u", "v", "edge_betweenness", "is_bridge"])
+        .head(top_n)
+    )
+    edge_table = Table(title=f"Top {top_n} bottleneck edges")
+    edge_table.add_column("u")
+    edge_table.add_column("v")
+    edge_table.add_column("edge_betweenness", justify="right")
+    edge_table.add_column("bridge", justify="center")
+    for row in edges_top.iter_rows(named=True):
+        edge_table.add_row(
+            str(row["u"]),
+            str(row["v"]),
+            f"{float(row['edge_betweenness']):.6f}",
+            "yes" if bool(row["is_bridge"]) else "no",
+        )
+    app_ctx.console.print(edge_table)
+
+    bridge_count = int(edge_metrics_df.filter(edge_metrics_df["is_bridge"]).height)
+    app_ctx.console.print(f"Bridges: {bridge_count} / {int(edge_metrics_df.height)}")
 
     app_ctx.console.print(f"[green]OK[/green] Wrote results to {out_dir}")

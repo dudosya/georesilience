@@ -1,38 +1,64 @@
 # GeoResilience
 
-High-performance CLI tool that creates a “Digital Twin” of urban power grids to simulate infrastructure failure and predict risk.
+GeoResilience builds a lightweight geospatial “digital twin” of a city-scale power network from OpenStreetMap, converts it into a topological graph, simulates cascading failures, and trains a graph neural network to predict node-level failure risk.
 
-## Architecture
+Focus is on data provenance, explicit modeling assumptions, reproducibility, and inspectable artifacts (Parquet + JSON).
 
-```mermaid
-flowchart LR
-	CLI[Typer CLI + Rich UX]
+## Geospatial Model
 
-	subgraph Data[Data Pipeline]
-		OSM[OSMnx Fetch]
-		Clean[Clean + Validate\n(Pydantic + Polars)]
-		Store[(Parquet + JSON)]
-	end
+### Data Source and Semantics
 
-	subgraph Engine[Resilience Engine]
-		Build[Build Graph\n(NetworkX)]
-		Metrics[Centrality + Bottlenecks]
-		Cascade[Cascading Failure Simulation]
-	end
+Ingestion uses OpenStreetMap via OSMnx. Linear infrastructure is represented by LineString features tagged as power lines/cables. Substations are represented by point or polygon features; polygons are reduced to centroids.
 
-	subgraph ML[Predictive Risk Layer]
-		Feat[Feature Engineering]
-		GCN[GCN (PyTorch Geometric + Lightning)]
-		Risk[Risk Scores]
-	end
+This is not a utility-grade network model. It is a topology-first approximation suitable for comparative resilience analysis and prototyping.
 
-	CLI --> OSM --> Clean --> Store
-	Store --> Build --> Metrics --> Cascade
-	Store --> Feat --> GCN --> Risk
-	Cascade --> Feat
-	CLI --> Cascade
-	CLI --> Risk
-```
+### Topology Construction
+
+The graph is an undirected NetworkX graph. Nodes represent line endpoints and substations. Edges represent observed power line/cable segments.
+
+Node identifiers are stable string IDs derived from coordinates (snapped to a fixed precision), enabling consistent joins across parquet artifacts.
+
+### Geometry and Distance
+
+Edges store WKT geometry when available.
+
+Current note: the stored `length_m` is computed from the raw geometry length. If the input geometry is unprojected WGS84, this value is not true meters. If you need metric lengths, add a projection step before measuring.
+
+## Resilience Engine
+
+### Bottlenecks
+
+The CLI reports bottlenecks using node betweenness centrality, degree, and connected-component membership/size. It also reports edge betweenness centrality and bridge detection.
+
+The simulation command prints top-N bottleneck nodes/edges as Rich tables.
+
+### Cascading Failure Simulation
+
+The cascade model is Motter–Lai style, using betweenness centrality as a proxy for load.
+
+Initial failures are selected either as `targeted` (highest base load) or `random` (seeded). Capacity per node is $C_i = (1 + \alpha) \cdot L_i$, where $L_i$ is base load. Each step recomputes load on the remaining graph; nodes exceeding capacity fail; iteration continues until stable or `max_steps`.
+
+This is a stylized redistribution model intended for experimentation and feature generation, not a full power-flow solver.
+
+## Predictive Risk Layer (GCN)
+
+Training uses a lightweight GCN (Torch Geometric + PyTorch Lightning) to predict node-level failure probability.
+
+Inputs are topological features exported from the resilience engine plus spatial coordinates (x/y) from the dataset. Labels are derived from the cascade simulation outputs. The CLI seeds Python/NumPy/PyTorch and Lightning to ensure deterministic behavior where supported.
+
+## Artifacts
+
+| Location                                                   | Purpose                                                                                 |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `data/<dataset>/nodes.parquet`                             | Node table (`node_id`, `kind`, `x`, `y`).                                               |
+| `data/<dataset>/edges.parquet`                             | Edge table (`edge_id`, `u`, `v`, `kind`, optional `geometry_wkt`, optional `length_m`). |
+| `data/<dataset>/meta.json`                                 | Dataset metadata.                                                                       |
+| `data/<dataset>/runs/<run>/node_metrics.parquet`           | Node features for analysis/ML.                                                          |
+| `data/<dataset>/runs/<run>/edge_metrics.parquet`           | Edge features for analysis.                                                             |
+| `data/<dataset>/runs/<run>/simulation_nodes.parquet`       | Node-level cascade outcomes.                                                            |
+| `data/<dataset>/runs/<run>/simulation_steps.parquet`       | Step-by-step cascade trace.                                                             |
+| `data/<dataset>/runs/<run>/{config,summary,manifest}.json` | Reproducible run metadata.                                                              |
+| `data/<dataset>/predictions/risk_*.parquet`                | Predictions (`node_id`, `risk`).                                                        |
 
 ## Install (uv)
 
@@ -40,11 +66,11 @@ Core (CLI + graph + simulation):
 
 `uv pip install -e .`
 
-Enable ingestion from OpenStreetMap (OSMnx + geospatial stack):
+Enable ingestion (OSMnx + geo stack):
 
 `uv pip install -e .[geo]`
 
-Enable ML (PyTorch Lightning + Torch Geometric):
+Enable ML (Lightning + Torch Geometric):
 
 `uv pip install -e .[ml]`
 
@@ -52,40 +78,28 @@ Dev tools (tests/lint/type-check):
 
 `uv pip install -e .[dev]`
 
-## Usage
+## CLI Usage
 
-Ingest a city dataset (writes `nodes.parquet`, `edges.parquet`, `meta.json`):
+Ingest a city dataset:
 
 `georesilience ingest city "Austin, TX, USA" --out data/austin`
 
-Run a cascading failure simulation:
+Run a cascade simulation (prints bottleneck tables; writes a run folder):
 
-`georesilience simulate cascade data/austin --alpha 0.2 --initial-failures 2 --mode targeted`
+`georesilience simulate cascade data/austin --alpha 0.2 --initial-failures 2 --mode targeted --seed 42`
 
-Outputs are written under `data/austin/runs/...`.
-
-### Train / Predict (GCN)
-
-Install ML extras first:
-
-`uv pip install -e .[ml]`
-
-Train a node-risk GCN using the latest simulation run for labels/features:
+Train a GCN (uses the latest run by default):
 
 `georesilience train gcn data/austin --epochs 30 --seed 42`
 
-Predict node risk probabilities (writes a Parquet file and prints top-k):
+Predict risk probabilities (prints summary + top-k; writes Parquet):
 
 `georesilience predict gcn data/austin --checkpoint data/austin/models/gcn/last.ckpt`
 
-## Windows note (Torch Geometric)
+Optional: select a specific simulation run for features:
 
-Torch Geometric installs are sensitive to your PyTorch build (CPU vs CUDA) and version.
-The most reliable path is:
+`georesilience predict gcn data/austin --checkpoint data/austin/models/gcn/last.ckpt --run-dir data/austin/runs/<run_name>`
 
-1. Install PyTorch first (CPU/CUDA) using the official selector.
-2. Install `torch-geometric` and its compiled companions matching that torch build.
+## Windows Note (Torch Geometric)
 
-If `uv pip install -e .[ml]` fails on Windows, follow the Torch Geometric wheel instructions for your exact Torch/CUDA version.
-
-If that becomes painful, we can swap the GCN implementation to pure PyTorch while keeping the same CLI/data contracts.
+Torch Geometric wheels must match your installed PyTorch build (version + CPU/CUDA). If `uv pip install -e .[ml]` fails, install PyTorch first, then install Torch Geometric following the official wheel instructions for your exact torch/CUDA combination.
